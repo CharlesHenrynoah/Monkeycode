@@ -46,10 +46,11 @@ export default function AnalysisPage() {
 
   // Auto-generate diagram when file content is loaded
   useEffect(() => {
-    if (currentFileContent && selectedFile && !analysisResults.diagram && !loading) {
+    if (currentFileContent && selectedFile && !analysisResults.diagram && !loading && apiKey) {
+      console.log("Auto-generating diagram for:", selectedFile)
       analyzeCode("diagram")
     }
-  }, [currentFileContent, selectedFile])
+  }, [currentFileContent, selectedFile, apiKey])
 
   const loadRepository = async (url: string) => {
     try {
@@ -156,6 +157,8 @@ export default function AnalysisPage() {
         return
       }
 
+      console.log("Analysis result:", data.result)
+      
       setAnalysisResults((prev) => ({ ...prev, [analysisType]: data.result }))
 
       // Switch to the relevant tab after analysis
@@ -383,7 +386,7 @@ export default function AnalysisPage() {
 
                     <TabsContent value="diagram" className="mt-4 flex-1">
                       <div className="h-full bg-black/60 rounded-lg border border-[#39FF14]/30">
-                        {analysisResults.diagram?.nodes ? (
+                        {analysisResults.diagram?.nodes && analysisResults.diagram.nodes.length > 0 ? (
                           <FlowDiagram nodes={analysisResults.diagram.nodes} edges={analysisResults.diagram.edges} />
                         ) : (
                           <div className="h-full flex flex-col items-center justify-center">
@@ -394,7 +397,12 @@ export default function AnalysisPage() {
                             >
                               {loading ? "Analyzing..." : "Generate Diagram"}
                             </Button>
-                            <p className="text-gray-400">Click to generate the flow diagram.</p>
+                            <p className="text-gray-400">
+                              {loading ? "Generating diagram..." : "Click to generate the flow diagram."}
+                            </p>
+                            {analysisResults.diagram && !analysisResults.diagram.nodes && (
+                              <p className="text-red-400 mt-2">Error: No diagram data received</p>
+                            )}
                           </div>
                         )}
                       </div>
