@@ -9,7 +9,7 @@ import ReactFlow, {
   type Edge,
   MarkerType,
 } from "reactflow"
-// import "reactflow/dist/style.css"
+import "reactflow/dist/style.css"
 
 const typeColor: Record<string, string> = {
   start: "#22c55e",
@@ -60,6 +60,8 @@ export default function FlowDiagram({ nodes: initialNodes, edges: initialEdges }
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges)
 
   useEffect(() => {
+    console.log("FlowDiagram received nodes:", initialNodes)
+    console.log("FlowDiagram received edges:", initialEdges)
     setNodes(initialNodes)
     setEdges(initialEdges)
   }, [initialNodes, initialEdges, setNodes, setEdges])
