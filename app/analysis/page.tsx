@@ -13,7 +13,7 @@ import FlowDiagram from "./components/flow-diagram"
 export default function AnalysisPage() {
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [language, setLanguage] = useState("English")
-  const [activeTab, setActiveTab] = useState("source")
+  const [activeTab, setActiveTab] = useState("diagram")
 
   const [repoData, setRepoData] = useState<any>(null)
   const [fileContents, setFileContents] = useState<any>({})
@@ -43,6 +43,13 @@ export default function AnalysisPage() {
       setIsInitialized(true)
     }
   }, [])
+
+  // Auto-generate diagram when file content is loaded
+  useEffect(() => {
+    if (currentFileContent && selectedFile && !analysisResults.diagram && !loading) {
+      analyzeCode("diagram")
+    }
+  }, [currentFileContent, selectedFile])
 
   const loadRepository = async (url: string) => {
     try {
@@ -174,12 +181,14 @@ export default function AnalysisPage() {
     )
   }
 
-  const handleFileSelect = (file: any) => {
+  const handleFileSelect = async (file: any) => {
     if (file.type === "file") {
       setSelectedFile(file.name)
       setHighlightedCode("") // Clear previous highlighted code
       setAnalysisResults({}) // Clear previous analysis
-      loadFileContent(file.path)
+      await loadFileContent(file.path)
+      // Auto-generate diagram after loading file content
+      setActiveTab("diagram")
     }
   }
 
