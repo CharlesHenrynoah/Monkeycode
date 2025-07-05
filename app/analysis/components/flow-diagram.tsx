@@ -9,15 +9,14 @@ import ReactFlow, {
   type Edge,
   MarkerType,
 } from "reactflow"
-import "reactflow/dist/style.css"
 
 const typeColor: Record<string, string> = {
   start: "#22c55e",
-  end: "#22c55e",
-  process: "#39FF14",
+  end: "#ef4444",
+  process: "#a855f7",
   condition: "#f97316",
   loop: "#3b82f6",
-  function: "#a855f7",
+  function: "#39FF14",
   input: "#0ea5e9",
   output: "#eab308",
 }
@@ -25,17 +24,22 @@ const typeColor: Record<string, string> = {
 const CustomNode = ({ data, type }: { data: { label: string }; type: string }) => (
   <div
     style={{
-      background: "#1a1a1a",
+      background: "#111",
       border: `1px solid ${typeColor[type] ?? "#39FF14"}`,
-      borderRadius: 6,
-      padding: "6px 10px",
+      borderRadius: 12,
+      padding: "12px 16px",
       color: "#fff",
-      width: 150,
-      minHeight: 50,
+      width: 220,
+      minHeight: 80,
+      display: "flex",
+      flexDirection: "column",
+      justifyContent: "center",
     }}
   >
-    <span className="text-xs uppercase text-gray-400">{type}</span>
-    <div className="text-sm font-medium">{data.label}</div>
+    <span className="text-xs uppercase font-mono" style={{ color: typeColor[type] ?? "#39FF14" }}>
+      {type}
+    </span>
+    <div className="text-base font-medium mt-1">{data.label}</div>
   </div>
 )
 
@@ -60,8 +64,6 @@ export default function FlowDiagram({ nodes: initialNodes, edges: initialEdges }
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges)
 
   useEffect(() => {
-    console.log("FlowDiagram received nodes:", initialNodes)
-    console.log("FlowDiagram received edges:", initialEdges)
     setNodes(initialNodes)
     setEdges(initialEdges)
   }, [initialNodes, initialEdges, setNodes, setEdges])
@@ -70,10 +72,13 @@ export default function FlowDiagram({ nodes: initialNodes, edges: initialEdges }
 
   const defaultEdgeOptions = useMemo(
     () => ({
-      style: { stroke: "#39FF14", strokeWidth: 2 },
+      type: "smoothstep",
+      style: { stroke: "#39FF14", strokeWidth: 1.5 },
       markerEnd: {
         type: MarkerType.ArrowClosed,
         color: "#39FF14",
+        width: 15,
+        height: 15,
       },
     }),
     [],
@@ -90,6 +95,7 @@ export default function FlowDiagram({ nodes: initialNodes, edges: initialEdges }
         proOptions={proOptions}
         defaultEdgeOptions={defaultEdgeOptions}
         fitView
+        fitViewOptions={{ padding: 0.1 }}
       >
         <Controls
           style={{
@@ -100,7 +106,7 @@ export default function FlowDiagram({ nodes: initialNodes, edges: initialEdges }
             },
           }}
         />
-        <Background color="#39FF14" gap={16} />
+        <Background color="#39FF14" gap={24} />
       </ReactFlow>
     </div>
   )

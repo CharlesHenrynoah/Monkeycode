@@ -1,16 +1,22 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import type React from "react"
+
+import { useState, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { RefreshCw, Star, GitFork, Folder, FileText } from "lucide-react"
+import { RefreshCw, Star, GitFork, Folder, FileText, MessageSquare, Send, ChevronRight, Loader2 } from "lucide-react"
 import Link from "next/link"
 import FlowDiagram from "./components/flow-diagram"
+import { useChat } from "@ai-sdk/react"
+import { Toaster } from "@/components/ui/toaster"
+import { useToast } from "@/hooks/use-toast"
 
 export default function AnalysisPage() {
+  const { toast } = useToast()
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [language, setLanguage] = useState("English")
   const [activeTab, setActiveTab] = useState("diagram")
@@ -27,6 +33,41 @@ export default function AnalysisPage() {
   const [repoUrl, setRepoUrl] = useState("")
   const [isInitialized, setIsInitialized] = useState(false)
   const router = useRouter()
+  const chatContainerRef = useRef<HTMLDivElement>(null)
+  const [fileTree, setFileTree] = useState<any[]>([])
+  const [openFolders, setOpenFolders] = useState<Set<string>>(new Set())
+  const [loadingFolders, setLoadingFolders] = useState<Set<string>>(new Set())
+
+  const {
+    messages,
+    input,
+    handleInputChange,
+    handleSubmit,
+    setMessages,
+    isLoading: isChatLoading,
+  } = useChat({
+    api: "/api/analyze",
+    body: {
+      analysisType: "chat",
+      code: currentFileContent,
+      fileName: selectedFile,
+      apiKey: apiKey,
+      apiKeyType: apiKeyType,
+    },
+    onError: (err) => {
+      toast({
+        variant: "destructive",
+        title: "Chat Error",
+        description: err.message,
+      })
+    },
+  })
+
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight
+    }
+  }, [messages])
 
   useEffect(() => {
     const storedApiKey = localStorage.getItem("apiKey")
@@ -60,12 +101,28 @@ export default function AnalysisPage() {
 
       if (data.error) {
         console.error("Error loading repository:", data.error)
+        toast({
+          variant: "destructive",
+          title: "Failed to load repository",
+          description: data.error,
+        })
         return
       }
 
       setRepoData(data)
+      const sortedContents = data.contents.sort((a: any, b: any) => {
+        if (a.type === "dir" && b.type === "file") return -1
+        if (a.type === "file" && b.type === "dir") return 1
+        return a.name.localeCompare(b.name)
+      })
+      setFileTree(sortedContents)
     } catch (error) {
       console.error("Error loading repository:", error)
+      toast({
+        variant: "destructive",
+        title: "Failed to load repository",
+        description: error instanceof Error ? error.message : "An unknown error occurred.",
+      })
     } finally {
       setLoading(false)
     }
@@ -110,6 +167,11 @@ export default function AnalysisPage() {
 
       if (data.error) {
         console.error("Error loading file:", data.error)
+        toast({
+          variant: "destructive",
+          title: "Failed to load file",
+          description: data.error,
+        })
         return
       }
 
@@ -118,6 +180,11 @@ export default function AnalysisPage() {
       highlightCode(data.content)
     } catch (error) {
       console.error("Error loading file:", error)
+      toast({
+        variant: "destructive",
+        title: "Failed to load file",
+        description: error instanceof Error ? error.message : "An unknown error occurred.",
+      })
     } finally {
       setLoading(false)
     }
@@ -129,86 +196,190 @@ export default function AnalysisPage() {
     const freshApiKeyType = localStorage.getItem("apiKeyType")
 
     if (!currentFileContent || !selectedFile || !freshApiKey) {
-      alert("Session error: API Key not found. Please return to the homepage and reconnect.")
+      toast({
+        variant: "destructive",
+        title: "Session Error",
+        description: "API Key not found. Please return to the homepage and reconnect.",
+      })
       router.push("/")
       return
     }
 
     try {
       setLoading(true)
-      const response = await fetch("/api/analyze", {
+
+      const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           code: currentFileContent,
           fileName: selectedFile,
-          apiKey: freshApiKey, // Use the freshest key
-          apiKeyType: freshApiKeyType, // Use the freshest type
+          apiKey: freshApiKey,
+          apiKeyType: freshApiKeyType,
           analysisType,
           language,
         }),
       })
 
-      const data = await response.json()
+      // -- Sécurisation du parsing -------------------------
+      const raw = await res.text()
+      let data: any
+      try {
+        data = JSON.parse(raw)
+      } catch (e) {
+        console.error("Analyse – réponse non JSON :", raw)
+        toast({
+          variant: "destructive",
+          title: "Invalid AI Response",
+          description: "The AI returned an invalid response. Please try again or check your API quota.",
+        })
+        setLoading(false) // Assurez-vous de réinitialiser le chargement ici
+        return
+      }
+      // ----------------------------------------------------
 
       if (data.error) {
         console.error("Analysis error:", data.error, data.raw)
-        alert(`Analysis failed: ${data.error}`)
+        toast({
+          variant: "destructive",
+          title: "Analysis Failed",
+          description: data.error,
+        })
+        setLoading(false) // Et ici aussi
         return
       }
 
-      console.log("Analysis result:", data.result)
-      
       setAnalysisResults((prev) => ({ ...prev, [analysisType]: data.result }))
 
-      // Switch to the relevant tab after analysis
-      if (analysisType === "diagram") {
-        setActiveTab("diagram")
-      } else if (analysisType === "natural") {
-        setActiveTab("natural")
-      } else if (analysisType === "pseudocode") {
-        setActiveTab("pseudocode")
-      }
+      if (analysisType === "diagram") setActiveTab("diagram")
+      if (analysisType === "natural") setActiveTab("natural")
+      if (analysisType === "pseudocode") setActiveTab("pseudocode")
     } catch (error) {
       console.error("Error analyzing code:", error)
+      toast({
+        variant: "destructive",
+        title: "Analysis Error",
+        description: "An unexpected error occurred while analyzing the code.",
+      })
     } finally {
       setLoading(false)
     }
   }
 
-  const FileIcon = ({ type }: { type: string }) => {
-    return type === "folder" ? (
-      <Folder className="h-4 w-4 text-[#39FF14]" />
-    ) : (
-      <FileText className="h-4 w-4 text-blue-400" />
-    )
+  const handleChatSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    if (!input) return
+    // Use the handleSubmit from useChat, but provide the most up-to-date context in the body
+    handleSubmit(e, {
+      body: {
+        analysisType: "chat",
+        code: currentFileContent,
+        fileName: selectedFile,
+        apiKey: localStorage.getItem("apiKey"),
+        apiKeyType: localStorage.getItem("apiKeyType"),
+        language, // Pass language for context
+      },
+    })
   }
 
-  const handleFileSelect = async (file: any) => {
-    if (file.type === "file") {
-      setSelectedFile(file.name)
-      setHighlightedCode("") // Clear previous highlighted code
-      setAnalysisResults({}) // Clear previous analysis
-      await loadFileContent(file.path)
-      // Auto-generate diagram after loading file content
+  const updateTreeWithChildren = (tree: any[], path: string, children: any[]): any[] => {
+    return tree.map((node) => {
+      if (node.path === path) {
+        const sortedChildren = children.sort((a: any, b: any) => {
+          if (a.type === "dir" && b.type === "file") return -1
+          if (a.type === "file" && b.type === "dir") return 1
+          return a.name.localeCompare(b.name)
+        })
+        return { ...node, children: sortedChildren }
+      }
+      if (node.children) {
+        return { ...node, children: updateTreeWithChildren(node.children, path, children) }
+      }
+      return node
+    })
+  }
+
+  const handleItemClick = async (item: any) => {
+    if (item.type === "file") {
+      setSelectedFile(item.path)
+      setHighlightedCode("")
+      setAnalysisResults({})
+      setMessages([])
+      await loadFileContent(item.path)
       setActiveTab("diagram")
+    } else if (item.type === "dir") {
+      const path = item.path
+      const newOpenFolders = new Set(openFolders)
+      if (newOpenFolders.has(path)) {
+        newOpenFolders.delete(path)
+      } else {
+        newOpenFolders.add(path)
+        if (!item.children) {
+          setLoadingFolders((prev) => new Set(prev).add(path))
+          try {
+            const response = await fetch(
+              `/api/github?repo=${encodeURIComponent(repoUrl)}&path=${encodeURIComponent(path)}`,
+            )
+            const data = await response.json()
+            if (data.error) {
+              console.error("Error loading folder contents:", data.error)
+              toast({
+                variant: "destructive",
+                title: "Failed to load folder",
+                description: data.error,
+              })
+              newOpenFolders.delete(path)
+            } else {
+              setFileTree((prevTree) => updateTreeWithChildren(prevTree, path, data.contents))
+            }
+          } catch (error) {
+            console.error("Error fetching folder contents:", error)
+            toast({
+              variant: "destructive",
+              title: "Failed to load folder",
+              description: error instanceof Error ? error.message : "An unknown error occurred.",
+            })
+            newOpenFolders.delete(path)
+          } finally {
+            setLoadingFolders((prev) => {
+              const newLoading = new Set(prev)
+              newLoading.delete(path)
+              return newLoading
+            })
+          }
+        }
+      }
+      setOpenFolders(newOpenFolders)
     }
   }
 
-  const renderFileTree = (files: any[], level = 0) => {
-    if (!files) return null
-
-    return files.map((file, index) => (
-      <div key={index} style={{ paddingLeft: `${level * 16}px` }}>
+  const renderFileTree = (items: any[], level = 0) => {
+    return items.map((item) => (
+      <div key={item.path}>
         <div
           className={`flex items-center gap-2 p-2 rounded cursor-pointer hover:bg-[#39FF14]/10 ${
-            selectedFile === file.name ? "bg-[#39FF14]/20" : ""
+            selectedFile === item.path ? "bg-[#39FF14]/20" : ""
           }`}
-          onClick={() => handleFileSelect(file)}
+          onClick={() => handleItemClick(item)}
+          style={{ paddingLeft: `${level * 16 + 8}px` }}
         >
-          <FileIcon type={file.type} />
-          <span className="text-white text-sm">{file.name}</span>
+          {item.type === "dir" ? (
+            <>
+              <ChevronRight
+                className={`h-4 w-4 transition-transform ${openFolders.has(item.path) ? "rotate-90" : ""}`}
+              />
+              <Folder className="h-4 w-4 text-[#39FF14]" />
+              <span className="text-white text-sm">{item.name}</span>
+              {loadingFolders.has(item.path) && <Loader2 className="h-4 w-4 animate-spin ml-auto" />}
+            </>
+          ) : (
+            <>
+              <FileText className="h-4 w-4 text-blue-400 ml-4" />
+              <span className="text-white text-sm">{item.name}</span>
+            </>
+          )}
         </div>
+        {item.type === "dir" && openFolders.has(item.path) && item.children && renderFileTree(item.children, level + 1)}
       </div>
     ))
   }
@@ -223,6 +394,7 @@ export default function AnalysisPage() {
 
   return (
     <div className="min-h-screen bg-black relative overflow-hidden">
+      <Toaster />
       {/* Background Image with Overlay */}
       <div
         className="absolute inset-0 bg-cover bg-center bg-no-repeat"
@@ -306,10 +478,10 @@ export default function AnalysisPage() {
                   {repoData?.contents?.length || 0} FILES
                 </Badge>
               </div>
-              {repoData?.contents ? (
-                renderFileTree(repoData.contents)
+              {fileTree.length > 0 ? (
+                renderFileTree(fileTree)
               ) : (
-                <div className="text-gray-400 text-sm p-4">Loading files...</div>
+                <div className="text-gray-400 text-sm p-4">{loading ? "Loading files..." : "No files found."}</div>
               )}
             </div>
 
@@ -336,7 +508,7 @@ export default function AnalysisPage() {
 
           {/* Main Content */}
           <div className="flex-1 flex flex-col">
-            <div className="bg-black/40 backdrop-blur-md border border-[#39FF14]/30 m-4 rounded-lg flex-1 overflow-hidden">
+            <div className="bg-black/40 backdrop-blur-md border border-[#39FF14]/30 mx-2 rounded-lg flex-1 flex flex-col overflow-hidden">
               {/* Language Selector */}
               <div className="p-4 border-b border-[#39FF14]/20">
                 <div className="flex items-center gap-4">
@@ -354,7 +526,7 @@ export default function AnalysisPage() {
               </div>
 
               {/* Content Area */}
-              <div className="flex-1 p-4">
+              <div className="flex-1 p-4 flex flex-col min-h-0">
                 {selectedFile ? (
                   <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
                     <TabsList className="bg-black/60 border border-[#39FF14]/30">
@@ -382,9 +554,15 @@ export default function AnalysisPage() {
                       >
                         Pseudocode
                       </TabsTrigger>
+                      <TabsTrigger
+                        value="chat"
+                        className="data-[state=active]:bg-[#39FF14] data-[state=active]:text-black"
+                      >
+                        Chat
+                      </TabsTrigger>
                     </TabsList>
 
-                    <TabsContent value="diagram" className="mt-4 flex-1">
+                    <TabsContent value="diagram" className="mt-4 flex-1 min-h-0">
                       <div className="h-full bg-black/60 rounded-lg border border-[#39FF14]/30">
                         {analysisResults.diagram?.nodes && analysisResults.diagram.nodes.length > 0 ? (
                           <FlowDiagram nodes={analysisResults.diagram.nodes} edges={analysisResults.diagram.edges} />
@@ -408,7 +586,7 @@ export default function AnalysisPage() {
                       </div>
                     </TabsContent>
 
-                    <TabsContent value="source" className="mt-4 flex-1">
+                    <TabsContent value="source" className="mt-4 flex-1 min-h-0">
                       <div className="bg-black/60 rounded-lg border border-[#39FF14]/30 h-full overflow-auto">
                         {isHighlighting || loading ? (
                           <div className="p-8 text-center text-gray-400">Loading & Highlighting...</div>
@@ -421,8 +599,8 @@ export default function AnalysisPage() {
                       </div>
                     </TabsContent>
 
-                    <TabsContent value="natural" className="mt-4 flex-1">
-                      <div className="bg-black/60 rounded-lg border border-[#39FF14]/30 p-6 h-full overflow-auto">
+                    <TabsContent value="natural" className="mt-4 flex-1 min-h-0">
+                      <div className="bg-black/60 rounded-lg border border-[#39FF14]/30 h-full overflow-auto p-6">
                         {!analysisResults.natural && (
                           <Button
                             onClick={() => analyzeCode("natural")}
@@ -451,8 +629,8 @@ export default function AnalysisPage() {
                       </div>
                     </TabsContent>
 
-                    <TabsContent value="pseudocode" className="mt-4 flex-1">
-                      <div className="bg-black/60 rounded-lg border border-[#39FF14]/30 p-6 h-full overflow-auto">
+                    <TabsContent value="pseudocode" className="mt-4 flex-1 min-h-0">
+                      <div className="bg-black/60 rounded-lg border border-[#39FF14]/30 h-full overflow-auto p-6">
                         {!analysisResults.pseudocode && (
                           <Button
                             onClick={() => analyzeCode("pseudocode")}
@@ -471,6 +649,77 @@ export default function AnalysisPage() {
                             Click "Generate Pseudocode" to analyze the code.
                           </div>
                         )}
+                      </div>
+                    </TabsContent>
+                    <TabsContent value="chat" className="mt-4 flex-1 flex flex-col min-h-0">
+                      <div className="bg-black/60 rounded-lg border border-[#39FF14]/30 h-full flex flex-col overflow-hidden">
+                        <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-6 space-y-4">
+                          {messages.length === 0 && !isChatLoading ? (
+                            <div className="flex flex-col items-center justify-center h-full text-center text-gray-400">
+                              <MessageSquare className="h-12 w-12 mb-4 text-[#39FF14]" />
+                              <h3 className="text-lg font-semibold text-white">Chat with your code</h3>
+                              <p>
+                                Ask anything about <span className="font-bold text-[#39FF14]">{selectedFile}</span>.
+                              </p>
+                            </div>
+                          ) : (
+                            messages.map((m) => (
+                              <div
+                                key={m.id}
+                                className={`flex gap-3 ${m.role === "user" ? "justify-end" : "justify-start"}`}
+                              >
+                                {m.role === "assistant" && (
+                                  <div className="w-8 h-8 rounded-full bg-[#39FF14] flex items-center justify-center font-bold text-black text-sm shrink-0">
+                                    AI
+                                  </div>
+                                )}
+                                <div
+                                  className={`rounded-lg px-4 py-2 max-w-lg prose prose-invert prose-p:my-0 prose-pre:my-0 prose-pre:bg-gray-900 prose-pre:p-2 ${m.role === "user" ? "bg-[#39FF14] text-black prose-strong:text-black" : "bg-gray-800 text-white"}`}
+                                >
+                                  <div dangerouslySetInnerHTML={{ __html: m.content.replace(/\n/g, "<br />") }} />
+                                </div>
+                                {m.role === "user" && (
+                                  <div className="w-8 h-8 rounded-full bg-gray-600 flex items-center justify-center font-bold text-white text-sm shrink-0">
+                                    You
+                                  </div>
+                                )}
+                              </div>
+                            ))
+                          )}
+                          {isChatLoading && messages.length > 0 && messages[messages.length - 1].role === "user" && (
+                            <div className="flex gap-3 justify-start">
+                              <div className="w-8 h-8 rounded-full bg-[#39FF14] flex items-center justify-center font-bold text-black text-sm shrink-0">
+                                AI
+                              </div>
+                              <div className="rounded-lg px-4 py-2 max-w-lg bg-gray-800 text-white">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-2 h-2 bg-white rounded-full animate-pulse delay-0"></div>
+                                  <div className="w-2 h-2 bg-white rounded-full animate-pulse delay-150"></div>
+                                  <div className="w-2 h-2 bg-white rounded-full animate-pulse delay-300"></div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                        <div className="p-4 border-t border-[#39FF14]/20">
+                          <form onSubmit={handleChatSubmit} className="flex items-center gap-2">
+                            <Input
+                              value={input}
+                              onChange={handleInputChange}
+                              placeholder="Ask a question about the code..."
+                              className="flex-1 bg-black/50 border-[#39FF14]/30 text-white"
+                              disabled={isChatLoading}
+                            />
+                            <Button
+                              type="submit"
+                              size="icon"
+                              className="bg-[#39FF14] text-black hover:bg-[#39FF14]/80"
+                              disabled={isChatLoading || !input}
+                            >
+                              <Send className="h-4 w-4" />
+                            </Button>
+                          </form>
+                        </div>
                       </div>
                     </TabsContent>
                   </Tabs>

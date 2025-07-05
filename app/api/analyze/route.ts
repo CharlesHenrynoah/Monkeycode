@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { generateObject } from "ai"
+import { generateObject, streamText, type CoreMessage } from "ai"
 import { createOpenAI } from "@ai-sdk/openai"
 import { createGoogleGenerativeAI } from "@ai-sdk/google"
 import { z } from "zod"
@@ -16,10 +16,10 @@ function isQuotaError(err: unknown) {
 function layout(nodes: any[], edges: any[]) {
   const g = new dagre.graphlib.Graph()
   g.setDefaultEdgeLabel(() => ({}))
-  g.setGraph({ rankdir: "TB", nodesep: 50, ranksep: 50 })
+  g.setGraph({ rankdir: "LR", nodesep: 30, ranksep: 60 })
 
-  const W = 150,
-    H = 50
+  const W = 220,
+    H = 80
   nodes.forEach((n) => g.setNode(n.id, { width: W, height: H }))
   edges.forEach((e) => g.setEdge(e.source, e.target))
 
@@ -41,17 +41,59 @@ const AIProvider = (apiKey: string, apiKeyType: string) => {
   throw new Error("Unsupported AI provider")
 }
 
+const MAX_CODE_LENGTH = 100000 // ~25k tokens, a safe limit for context windows
+
 /* -------------------------------------------------- */
 /* Route handler                                      */
 /* -------------------------------------------------- */
 
 export async function POST(req: NextRequest) {
   try {
-    const { code, apiKey, apiKeyType, analysisType, language = "English" } = await req.json()
+    const body = await req.json()
+    const isChatRequest = body.data?.analysisType === "chat"
+    const { code, apiKey, apiKeyType, analysisType, language = "English", fileName } = isChatRequest ? body.data : body
+    const messages: CoreMessage[] = body.messages ?? []
 
-    if (!apiKey || !apiKeyType) return NextResponse.json({ error: "Missing API credentials" }, { status: 400 })
+    if (!apiKey || !apiKeyType) {
+      return NextResponse.json({ error: "Missing API credentials" }, { status: 400 })
+    }
 
     const model = AIProvider(apiKey, apiKeyType)
+    let truncatedCode = code
+    if (code && typeof code === "string" && code.length > MAX_CODE_LENGTH) {
+      truncatedCode = code.substring(0, MAX_CODE_LENGTH)
+      console.warn(`Code truncated from ${code.length} to ${MAX_CODE_LENGTH} characters for AI analysis.`)
+    }
+
+    if (analysisType === "chat") {
+      if (!messages.length || !truncatedCode || !fileName) {
+        return NextResponse.json({ error: "Missing messages, code, or filename for chat analysis" }, { status: 400 })
+      }
+      const systemPrompt = `You are MONKEYCODE, an expert code assistant. Your role is to provide educational and concise explanations about the user's code. Answer the user's questions based on the provided file context. Your responses must be a maximum of four sentences and formatted using Markdown.
+
+File Name: ${fileName}
+
+File Content:
+\`\`\`
+${truncatedCode}
+\`\`\`
+${code.length > MAX_CODE_LENGTH ? "\n[Note: The code has been truncated due to its length. The analysis is based on the first 100,000 characters.]" : ""}`
+      const result = await streamText({ model, system: systemPrompt, messages, temperature: 0.3 })
+      return result.toDataStreamResponse()
+    }
+
+    const diagramPrompt = `Convert the following code into a highly detailed JSON object for a React Flow diagram. Your response must be extremely granular.
+
+- Decompose the code into the smallest possible logical units.
+- Every function call, variable assignment, conditional check, loop, and return statement must be a distinct node.
+- Use 'process' for assignments and operations, 'function' for calls, 'condition' for if/else, 'loop' for loops, 'input' for parameters, and 'output' for return values.
+- Ensure the flow is logical and easy to follow, creating branches where necessary.
+- The goal is a complex, comprehensive, and accurate representation of the code's execution flow.
+
+Code:
+\`\`\`
+${truncatedCode}
+\`\`\``
 
     if (analysisType === "diagram") {
       const diagramSchema = z.object({
@@ -61,9 +103,7 @@ export async function POST(req: NextRequest) {
             type: z
               .enum(["start", "end", "process", "condition", "loop", "function", "input", "output"])
               .describe("The type of the node."),
-            data: z.object({
-              label: z.string().describe("The text to display inside the node."),
-            }),
+            data: z.object({ label: z.string().describe("The text to display inside the node.") }),
           }),
         ),
         edges: z.array(
@@ -76,24 +116,34 @@ export async function POST(req: NextRequest) {
         ),
       })
 
-      const { object } = await generateObject({
-        model,
-        schema: diagramSchema,
-        prompt: `Convert the following code into a JSON object representing a flowchart for React Flow. Identify the logical steps, conditions, and loops.
+      let object: any
+      try {
+        const result = await generateObject({
+          model,
+          schema: diagramSchema,
+          prompt: diagramPrompt,
+          maxTokens: 4000,
+          temperature: 0.1,
+        })
+        object = result.object
+      } catch (error) {
+        console.warn("First attempt to generate diagram failed. Retrying with lower temperature.", error)
+        try {
+          const result = await generateObject({
+            model,
+            schema: diagramSchema,
+            prompt: diagramPrompt,
+            maxTokens: 4000,
+            temperature: 0,
+          })
+          object = result.object
+        } catch (finalError) {
+          console.error("Second attempt to generate diagram also failed.", finalError)
+          throw new Error("AI failed to generate valid diagram JSON after two attempts.")
+        }
+      }
 
-- Each node must have a unique 'id', a 'type', and a 'data' object with a 'label'.
-- Node types can be: 'start', 'end', 'process', 'condition', 'loop', 'function', 'input', 'output'.
-- Each edge must have a unique 'id', a 'source' node id, and a 'target' node id.
-
-Code:
-\`\`\`
-${code}
-\`\`\``,
-        maxTokens: 4000,
-        temperature: 0.1,
-      })
-
-      if (!object.nodes.length) {
+      if (!object || !object.nodes || !object.nodes.length) {
         return NextResponse.json({ error: "AI failed to generate a graph." }, { status: 500 })
       }
 
@@ -113,7 +163,6 @@ ${code}
           )
           .describe("An array of explanations for different parts of the code."),
       })
-
       const { object } = await generateObject({
         model,
         schema: explanationSchema,
@@ -121,7 +170,7 @@ ${code}
         
 Code:
 \`\`\`
-${code}
+${truncatedCode}
 \`\`\``,
         maxTokens: 4000,
         temperature: 0.1,
@@ -135,7 +184,6 @@ ${code}
           .string()
           .describe("The pseudocode representation of the code, written in a human-readable format."),
       })
-
       const { object } = await generateObject({
         model,
         schema: pseudocodeSchema,
@@ -143,7 +191,7 @@ ${code}
         
 Code:
 \`\`\`
-${code}
+${truncatedCode}
 \`\`\``,
         maxTokens: 4000,
         temperature: 0.1,
